@@ -1,4 +1,5 @@
 import json
+import yaml
 import logging
 import os
 import subprocess
@@ -67,8 +68,28 @@ def get_microk8s_nodes_json():
     )
 
 
+def get_microk8s_status_yaml():
+    return subprocess.check_output(
+        ["/snap/bin/microk8s", "status", "--format", "yaml"],
+        encoding="utf-8",
+    )
+
+
+def get_microk8s_masters():
+    status = get_microk8s_status_yaml()
+    status_yaml = yaml.safe_load(status)
+    high_availability = status_yaml['high-availability']
+
+    if high_availability['enabled']:
+        return high_availability['nodes']
+
+
 def join_url_key(unit):
     return unit.name + ".join_url"
+
+
+def is_master_key(unit):
+    return unit.name + ".is_master"
 
 
 def close_port(port):

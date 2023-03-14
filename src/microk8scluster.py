@@ -21,8 +21,10 @@ from utils import (
     get_departing_unit_name,
     get_microk8s_node,
     get_microk8s_nodes_json,
+    get_microk8s_masters,
     join_url_from_add_node_output,
     join_url_key,
+    is_master_key,
     microk8s_ready,
     open_port,
     retry_until_zero_rc,
@@ -70,6 +72,16 @@ class MicroK8sClusterEvent(RelationEvent):
     def join_url(self, url):
         """Record join URL for remote unit."""
         self.relation.data[self.app][join_url_key(self.unit)] = url
+
+    @property
+    def is_master(self):
+        """Retrieve master status for remote unit."""
+        return self.relation.data[self.app].get(is_master_key(self._local_unit))
+
+    @is_master.setter
+    def is_master(self, is_master):
+        """Record master status remote unit."""
+        self.relation.data[self.app][is_master_key(self.unit)] = is_master
 
     def snapshot(self):
         s = [
@@ -170,16 +182,16 @@ class MicroK8sCluster(Object):
     def _on_install(self, _):
         self.model.unit.status = MaintenanceStatus("installing OS packages")
 
-        # OS packages needed by storage providers
-        packages = ["nfs-common"]
-        # Install extra kernel modules, needed for Raspberry Pi, as well as mayastor
-        try:
-            kernel_version = os.uname().release
-            packages.append("linux-modules-extra-{}".format(kernel_version))
-        except OSError:
-            logger.exception("Failed to retrieve kernel version, will not install extra modules")
-
-        subprocess.check_call(["/usr/bin/apt-get", "install", "--yes", *packages])
+        # # OS packages needed by storage providers
+        # packages = ["nfs-common"]
+        # # Install extra kernel modules, needed for Raspberry Pi, as well as mayastor
+        # try:
+        #     kernel_version = os.uname().release
+        #     packages.append("linux-modules-extra-{}".format(kernel_version))
+        # except OSError:
+        #     logger.exception("Failed to retrieve kernel version, will not install extra modules")
+        #
+        # subprocess.check_call(["/usr/bin/apt-get", "install", "--yes", *packages])
         self.model.unit.status = MaintenanceStatus("installing microk8s")
         channel = self.model.config.get("channel", "auto")
         cmd = "/usr/bin/snap install microk8s".split()
@@ -278,7 +290,13 @@ class MicroK8sCluster(Object):
             return
 
         configmap = result.stdout
-        existing = json.loads(configmap).get("data", {}).get("Corefile")
+        existing = None
+        try:
+            existing = json.loads(configmap).get("data", {}).get("Corefile")
+        except json.JSONDecodeError:
+            logger.error("Failed to parse coredns configmap!")
+            return
+
         configured = self.model.config["coredns_config"]
         if existing == configured:
             logger.info("Nothing to do: contents of coredns_config setting are the same as coredns configmap.")
@@ -345,14 +363,28 @@ class MicroK8sCluster(Object):
         url = join_url_from_add_node_output(output)
         logger.debug("Generated join URL: {}".format(url))
         event.join_url = url
+
+        current_masters = get_microk8s_masters()
+        max_masters = int(self.model.config["max_masters"])
+        if len(current_masters) < max_masters:
+            event.is_master = "True"
+        else:
+            event.is_master = "False"
+
         self.model.unit.status = ActiveStatus()
 
     def _on_node_added(self, event):
         self.model.unit.status = MaintenanceStatus("joining the microk8s cluster")
         url = event.join_url
+        is_master = event.is_master
         logger.debug("Using join URL: {}".format(url))
+        logger.debug("Joining as master: {}".format(is_master))
+
         try:
             join_cmd = ["/snap/bin/microk8s", "join", url]
+            if is_master != 'True':
+                join_cmd += ["--worker"]
+                close_port("16443/tcp")
             if self.model.config.get("skip_verify"):
                 join_cmd += ["--skip-verify"]
 

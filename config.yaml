@@ -8,6 +8,12 @@ options:
     description: A space-separated list of addons that should be enabled.
     type: string
     default: dns ingress
+  max_masters:
+    description: >
+      Maximum number of units to add as masters before joining as workers. A value of -1 will join all units as 
+      masters. This setting only applies to new units, existing units will not be changed.
+    type: int
+    default: 6
   containerd_env:
     description: >
       Contents of the containerd-env file.
